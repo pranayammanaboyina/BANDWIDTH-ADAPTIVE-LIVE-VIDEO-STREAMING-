@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <title>Bandwidth-Adaptive Streaming (Custom RTP-Inspired UDP Hub)</title>
+  
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  
+  <style>
+    :root {
+      --bg: #090d16;
+      --card: #111827;
+      --card-inner: #1f2937;
+      --card-hover: #283548;
+      --border: #374151;
+      --border-focus: #4b5563;
+      --text: #f9fafb;
+      --text-muted: #9ca3af;
+      --cyan: #38bdf8;
+      --cyan-glow: rgba(56, 189, 248, 0.25);
+      --emerald: #10b981;
+      --emerald-glow: rgba(16, 185, 129, 0.2);
+      --amber: #f59e0b;
+      --amber-glow: rgba(245, 158, 11, 0.2);
+      --rose: #f43f5e;
+      --rose-glow: rgba(244, 63, 94, 0.2);
+      --indigo: #6366f1;
+      --indigo-glow: rgba(99, 102, 241, 0.25);
+      --teal: #14b8a6;
+      --purple: #a855f7;
+    }
+
+    body.theme-white {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --card-inner: #f1f5f9;
+      --card-hover: #e2e8f0;
+      --border: #e2e8f0;
+      --border-focus: #cbd5e1;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --cyan-glow: rgba(56, 189, 248, 0.15);
+      --emerald-glow: rgba(16, 185, 129, 0.15);
+      --amber-glow: rgba(245, 158, 11, 0.15);
+      --rose-glow: rgba(244, 63, 94, 0.15);
+      --indigo-glow: rgba(99, 102, 241, 0.15);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 20px 28px; min-height: 100vh; transition: background 0.25s ease, color 0.25s ease; overflow-x: hidden; }
+    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 18px; }
+    .brand-title { display: flex; align-items: center; gap: 12px; }
+    .brand-title h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
+    .header-actions { display: flex; align-items: center; gap: 14px; }
+    .theme-select-btn { background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 7px 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s ease; }
+    .theme-select-btn:hover { background: var(--card-inner); border-color: var(--border-focus); }
+    nav { display: flex; gap: 8px; margin-bottom: 22px; border-bottom: 1px solid var(--border); padding-bottom: 12px; overflow-x: auto; }
+    .nav-tab { background: transparent; border: 1px solid transparent; color: var(--text-muted); padding: 9px 18px; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: all 0.2s ease; white-space: nowrap; }
+    .nav-tab:hover { color: var(--text); background: var(--card); }
+    .nav-tab.active { background: var(--card); color: var(--cyan); border-color: var(--border); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15); }
+    .container { width: 100%; max-width: 1580px; margin: 0 auto; }
+    
+    .kpi-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 22px; }
+    .kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; position: relative; overflow: hidden; transition: transform 0.2s ease, border-color 0.2s ease; }
+    .kpi-card:hover { transform: translateY(-2px); border-color: var(--border-focus); }
+    .kpi-card.ai-card { border-color: rgba(168, 85, 247, 0.45); background: linear-gradient(180deg, rgba(168, 85, 247, 0.09) 0%, var(--card) 100%); }
+    .kpi-label { font-size: 0.65rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; display: flex; justify-content: space-between; align-items: center; }
+    .kpi-label span { font-size: 0.58rem; background: var(--card-inner); padding: 2px 6px; border-radius: 4px; font-family: monospace; color: var(--text); }
+    .kpi-label span.badge-ai { background: rgba(168, 85, 247, 0.22); color: var(--purple); }
+    .kpi-label span.badge-meas { background: rgba(56, 189, 248, 0.15); color: var(--cyan); }
+    .kpi-label span.badge-cfg { background: rgba(99, 102, 241, 0.18); color: var(--indigo); }
+    .kpi-value { font-size: 1.3rem; font-weight: 800; margin: 5px 0 2px 0; letter-spacing: -0.02em; }
+    .kpi-subtext { font-size: 0.66rem; color: var(--text-muted); }
+    
+    .screen-panel { display: none; }
+    .screen-panel.active { display: block; }
+    .grid-2col { display: grid; grid-template-columns: 1.6fr 1.2fr; gap: 22px; }
+    .grid-split { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+    .panel { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 22px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); }
+    .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .panel-title { font-size: 0.98rem; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; }
+    .chart-box { height: 270px; width: 100%; position: relative; }
+    .reasoning-box { background: var(--card-inner); border-left: 4px solid var(--cyan); border-radius: 6px; padding: 16px; font-size: 0.88rem; line-height: 1.6; color: var(--text); }
+    .btn { border: none; padding: 8px 16px; border-radius: 6px; font-size: 0.82rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; text-decoration: none; transition: all 0.2s ease; }
+    .btn:active { transform: scale(0.98); }
+    .btn-cyan { background: var(--cyan); color: #041019; }
+    .studio-monitor { background: #000; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .monitor-topbar, .monitor-footer { background: var(--card); padding: 9px 14px; display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; border-bottom: 1px solid var(--border); }
+    .monitor-footer { border-top: 1px solid var(--border); border-bottom: none; }
+    .monitor-badge { display: flex; align-items: center; gap: 7px; font-weight: 700; color: var(--rose); font-size: 0.75rem; }
+    .dot-rec { width: 8px; height: 8px; background: var(--rose); border-radius: 50%; box-shadow: 0 0 8px var(--rose-glow); animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.85); } }
+    .video-screen { width: 100%; aspect-ratio: 16/9; background: #000; position: relative; display: flex; align-items: center; justify-content: center; }
+    .video-screen img { width: 100%; height: 100%; object-fit: contain; }
+    .video-screen-hud { position: absolute; bottom: 12px; left: 12px; display: flex; gap: 8px; }
+    .hud-chip { background: rgba(10, 15, 26, 0.78); border: 1px solid rgba(255, 255, 255, 0.18); color: #fff; padding: 4px 9px; border-radius: 4px; font-size: 0.72rem; font-family: monospace; backdrop-filter: blur(4px); }
+    .control-row { margin-bottom: 18px; }
+    .control-row span { display: flex; justify-content: space-between; font-size: 0.88rem; margin-bottom: 8px; }
+    input[type=range] { width: 100%; accent-color: var(--cyan); cursor: pointer; }
+    
+    .scenario-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .scenario-card { background: var(--card-inner); border: 1px solid var(--border); border-radius: 8px; padding: 14px; display: flex; align-items: center; gap: 14px; cursor: pointer; transition: all 0.2s ease; }
+    .scenario-card:hover { border-color: var(--cyan); background: var(--card-hover); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); }
+    .scenario-icon-wrap { background: var(--card); padding: 10px; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+    .scenario-title { font-size: 0.9rem; font-weight: 700; display: block; margin-bottom: 2px; }
+    .scenario-desc { font-size: 0.74rem; color: var(--text-muted); }
+
+    .card-good .scenario-icon-wrap { color: var(--emerald); }
+    .card-good .scenario-title { color: var(--emerald); }
+    .card-highmed .scenario-icon-wrap { color: var(--teal); }
+    .card-highmed .scenario-title { color: var(--teal); }
+    .card-medium .scenario-icon-wrap { color: var(--cyan); }
+    .card-medium .scenario-title { color: var(--cyan); }
+    .card-poor .scenario-icon-wrap { color: var(--amber); }
+    .card-poor .scenario-title { color: var(--amber); }
+    .card-verypoor .scenario-icon-wrap { color: var(--rose); }
+    .card-verypoor .scenario-title { color: var(--rose); }
+    
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; text-align: left; }
+    th, td { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+    th { background: var(--card-inner); color: var(--text-muted); font-weight: 700; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; }
+    .dct-grid { width: 100%; border-collapse: separate; border-spacing: 4px; }
+    .dct-grid td { width: 12.5%; aspect-ratio: 1; text-align: center; font-size: 0.72rem; font-family: monospace; font-weight: bold; border-radius: 4px; border: none; padding: 8px 0; }
+    
+    .profile-indicator-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 14px; }
+    .profile-pill { background: var(--card-inner); border: 1px solid var(--border); border-radius: 6px; padding: 10px 8px; text-align: center; transition: all 0.25s ease; }
+    .profile-pill.active { border-color: var(--cyan); background: rgba(56, 189, 248, 0.15); box-shadow: 0 0 12px var(--cyan-glow); }
+    .profile-pill .p-label { font-size: 0.78rem; font-weight: 800; color: var(--text); }
+    .profile-pill.active .p-label { color: var(--cyan); }
+    .profile-pill .p-sub { font-size: 0.65rem; color: var(--text-muted); margin-top: 2px; }
+  </style>
+</head>
+<body id="main-body">
+
+  <header>
+    <div class="brand-title">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--cyan);"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+      <h1>Bandwidth-Adaptive Streaming (Custom RTP-Inspired UDP Hub)</h1>
+    </div>
+    <div class="header-actions">
+      <span style="font-size:0.75rem; color:var(--emerald); font-weight:700; background:rgba(16, 185, 129, 0.15); padding:6px 12px; border-radius:6px; border:1px solid rgba(16, 185, 129, 0.3);">
+        CN (RTP/UDP + FEC) + DIP (ROI 8x8 DCT) + DL (AR-RESNET)
+      </span>
+
+      <button class="theme-select-btn" onclick="toggleTheme()" title="Toggle Dark/Light Theme" id="theme-btn">
+        <svg id="theme-icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="5"></circle>
+          <line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+          <line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line>
+        </svg>
+      </button>
+      
+      <span id="socket-status" style="font-size:0.75rem; color:var(--text-muted); font-family:monospace; background:var(--card); padding:6px 10px; border-radius:6px; border:1px solid var(--border);">
+        MEDIA UDP: 5004 | PING/FEEDBACK: 5005
+      </span>
+    </div>
+  </header>
+
+  <nav>
+    <button class="nav-tab active" onclick="showScreen('screen-home', this)">Dashboard Home</button>
+    <button class="nav-tab" onclick="showScreen('screen-stream', this)">Transmitter Production Monitor</button>
+    <button class="nav-tab" onclick="showScreen('screen-lab', this)">Network Laboratory</button>
+    <button class="nav-tab" onclick="showScreen('screen-dip', this)">DIP &amp; DL Loss Analysis</button>
+    <button class="nav-tab" onclick="showScreen('screen-reports', this)">Telemetry &amp; Resilience</button>
+  </nav>
+
+  <div class="container">
+
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Achieved Rate <span class="badge-meas">MEASURED</span></div>
+        <div class="kpi-value" style="color:var(--cyan);" id="kpi-achieved-bw">--</div>
+        <div class="kpi-subtext">Actual Wire Throughput (kbps)</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-label">Shaper Limit <span class="badge-cfg">CONFIGURED</span></div>
+        <div class="kpi-value" style="color:var(--indigo);" id="kpi-configured-bw">--</div>
+        <div class="kpi-subtext">Simulator Bandwidth Ceiling</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-label">Feedback Loss <span class="badge-meas">MEASURED</span></div>
+        <div class="kpi-value" style="color:var(--rose);" id="kpi-loss">-- %</div>
+        <div class="kpi-subtext">Receiver Reorder Window Loss</div>
+      </div>
+
+      <div class="kpi-card ai-card">
+        <div class="kpi-label">Congestion Stress <span class="badge-ai">CN + DL</span></div>
+        <div class="kpi-value" style="color:var(--purple);" id="kpi-ai-loss-prob">-- %</div>
+        <div class="kpi-subtext" id="kpi-ai-acc-sub">AR-ResNet Active</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-label">Resolution <span>DIP</span></div>
+        <div class="kpi-value" style="color:var(--emerald);" id="kpi-res">--</div>
+        <div class="kpi-subtext">Active Ladder Tier (P0–P4)</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-label">Codec PSNR <span class="badge-meas">MEASURED</span></div>
+        <div class="kpi-value" style="color:var(--amber);" id="kpi-psnr">-- dB</div>
+        <div class="kpi-subtext">Direct Local Encoder PSNR</div>
+      </div>
+
+      <div class="kpi-card ai-card">
+        <div class="kpi-label">DL Restored PSNR <span class="badge-ai">AR-RESNET</span></div>
+        <div class="kpi-value" style="color:var(--purple);" id="kpi-ai-psnr">-- dB</div>
+        <div class="kpi-subtext" id="kpi-ai-mae-sub">L_Stream Deblocking</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-label">Transit Jitter <span class="badge-meas">MEASURED</span></div>
+        <div class="kpi-value" style="color:var(--indigo);" id="kpi-jitter">-- ms</div>
+        <div class="kpi-subtext">Inter-Arrival Jitter (ms)</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-label">Ping-Pong RTT <span class="badge-meas">MEASURED</span></div>
+        <div class="kpi-value" style="color:var(--teal);" id="kpi-rtt">-- ms</div>
+        <div class="kpi-subtext">Zero-Wait Network Probe</div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-label">Total Data <span>NET</span></div>
+        <div class="kpi-value" style="color:var(--emerald);" id="kpi-total-data">-- MB</div>
+        <div class="kpi-subtext">Cumulative Transferred</div>
+      </div>
+    </div>
+
+    <!-- Screen 1: Dashboard Home -->
+    <div id="screen-home" class="screen-panel active">
+      <div class="grid-2col">
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Configured Limit vs. Achieved Throughput &amp; Network Stress</span>
+            <span id="aimd-status-pill" style="border: 1px solid var(--amber); color: var(--amber); padding: 4px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 700;">Probing Headroom</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="homeTelemetryChart"></canvas>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Controller Decision Reasoning</span>
+            <button class="btn btn-cyan" onclick="fetch('/control/toggle_stream')" style="padding:4px 10px; font-size:0.75rem;">Pause / Play</button>
+          </div>
+          <div class="reasoning-box" id="reasoning-text">
+            Initializing baseline transmission parameters...
+          </div>
+          
+          <div style="margin-top:18px;">
+            <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Active Resolution Ladder Level (All 5 Tiers Active)</div>
+            <div class="profile-indicator-grid">
+              <div class="profile-pill" id="pill-0">
+                <div class="p-label">P0</div>
+                <div class="p-sub">240p (Q35)</div>
+              </div>
+              <div class="profile-pill" id="pill-1">
+                <div class="p-label">P1</div>
+                <div class="p-sub">360p (Q50)</div>
+              </div>
+              <div class="profile-pill" id="pill-2">
+                <div class="p-label">P2</div>
+                <div class="p-sub">480p (Q72)</div>
+              </div>
+              <div class="profile-pill" id="pill-3">
+                <div class="p-label">P3</div>
+                <div class="p-sub">480p+ (Q85)</div>
+              </div>
+              <div class="profile-pill" id="pill-4">
+                <div class="p-label">P4</div>
+                <div class="p-sub">720p (Q95)</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Screen 2: Transmitter Production Monitor -->
+    <div id="screen-stream" class="screen-panel">
+      <div class="grid-2col">
+        <div class="panel" style="margin-bottom:0;">
+          <div class="panel-header">
+            <span class="panel-title">Laptop 1 Transmitter Video Feed</span>
+            <div style="display:flex; gap:10px; align-items:center;">
+              <button class="btn btn-cyan" onclick="fetch('/control/toggle_view')">
+                <span id="diff-mode-btn-lbl">Toggle Error Difference Map</span>
+              </button>
+              <span id="frame-counter" style="font-size:0.8rem; color:var(--text-muted); font-family:monospace;">Frame #0</span>
+            </div>
+          </div>
+
+          <div class="studio-monitor">
+            <div class="monitor-topbar">
+              <div class="monitor-badge">
+                <div class="dot-rec"></div>
+                <span id="mon-feed-label">LOCAL CAMERA SENSOR</span>
+              </div>
+              <span style="color:var(--cyan); font-family:monospace;" id="dest-client-label">TARGET: LAPTOP 2</span>
+            </div>
+            <div class="video-screen">
+              <img id="video-display" src="" alt="Live Transmission Feed">
+              <div class="video-screen-hud">
+                <div class="hud-chip">MATRIX: <span id="tag-current-res">720p</span></div>
+                <div class="hud-chip" id="hud-quality-chip" style="color:var(--amber);">Q: 95</div>
+              </div>
+            </div>
+            <div class="monitor-footer">
+              <span>Encoding: Custom 8x8 DCT Quantization Tables</span>
+              <span id="mon-psnr-pill" style="color:var(--emerald);">Codec PSNR: -- dB</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-bottom:0;">
+          <div class="panel-header"><span class="panel-title">Transmission Node &amp; Resilience Inspector</span></div>
+          <div style="font-size:0.85rem; line-height:2.2;">
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:6px;">
+              <span style="color:var(--text-muted);">Framing &amp; Feedback Protocol:</span><b>Custom RTP-Inspired UDP Header</b>
+            </div>
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding:6px 0;">
+              <span style="color:var(--text-muted);">Receiver Node (Laptop 2):</span><b style="color:var(--emerald);" id="insp-client-ip">Auto-Negotiating...</b>
+            </div>
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding:6px 0;">
+              <span style="color:var(--text-muted);">Receiver DL Restoration Model:</span><b style="color:var(--purple);" id="insp-ai-val-state">AR-ResNet Active</b>
+            </div>
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding:6px 0;">
+              <span style="color:var(--text-muted);">Bitwise XOR FEC Recovered Frames:</span><b style="color:var(--emerald);" id="insp-fec-count">0 Frames</b>
+            </div>
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding:6px 0;">
+              <span style="color:var(--text-muted);">Playout Jitter Buffer Deadline:</span><b style="color:var(--cyan);" id="insp-jitter-buf">25 ms (Timestamp Heap)</b>
+            </div>
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding:6px 0;">
+              <span style="color:var(--text-muted);">Late Frames Discarded:</span><b style="color:var(--rose);" id="insp-late-drops">0 Frames</b>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Screen 3: Network Laboratory -->
+    <div id="screen-lab" class="screen-panel">
+      <div class="grid-split">
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Token-Bucket Shaper &amp; Impairment Controls</span></div>
+          <div class="control-row">
+            <span>Configured Bandwidth Limit: <b id="val-bw" style="color:var(--cyan);">6000 kbps</b></span>
+            <input type="range" id="lab-bw" min="200" max="8000" step="100" value="6000" oninput="applyLabSettings()">
+          </div>
+          <div class="control-row">
+            <span>Simulated Drop Rate: <b id="val-loss" style="color:var(--rose);">0.0%</b></span>
+            <input type="range" id="lab-loss" min="0" max="40" step="0.5" value="0" oninput="applyLabSettings()">
+          </div>
+          <div class="control-row">
+            <span>Network Propagation Delay: <b id="val-delay" style="color:var(--indigo);">0 ms</b></span>
+            <input type="range" id="lab-delay" min="0" max="250" value="0" oninput="applyLabSettings()">
+          </div>
+          <div class="control-row">
+            <span>Network Transit Jitter: <b id="val-jitter" style="color:var(--amber);">0 ms</b></span>
+            <input type="range" id="lab-jitter" min="0" max="60" value="0" oninput="applyLabSettings()">
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">1-Click Network Simulation Profiles (P0–P4 Coverage)</span></div>
+          <div class="scenario-grid">
+            <div class="scenario-card card-good" onclick="loadPreset(0, 5, 1, 6000)">
+              <div class="scenario-icon-wrap">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/></svg>
+              </div>
+              <div>
+                <span class="scenario-title">Good (6 Mbps) &rarr; P4</span>
+                <span class="scenario-desc">0% Loss • 5ms Delay • 720p HD (Q=95)</span>
+              </div>
+            </div>
+
+            <div class="scenario-card card-highmed" onclick="loadPreset(0.5, 12, 3, 3800)">
+              <div class="scenario-icon-wrap">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 18h16M4 12h14M4 6h10"/></svg>
+              </div>
+              <div>
+                <span class="scenario-title">High-Medium (3.8 Mbps) &rarr; P3</span>
+                <span class="scenario-desc">0.5% Loss • 12ms Delay • 480p+ (Q=85)</span>
+              </div>
+            </div>
+
+            <div class="scenario-card card-medium" onclick="loadPreset(1.8, 25, 7, 2400)">
+              <div class="scenario-icon-wrap">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 18h16M4 12h12M4 6h8"/><circle cx="18" cy="6" r="2"/></svg>
+              </div>
+              <div>
+                <span class="scenario-title">Medium (2.4 Mbps) &rarr; P2</span>
+                <span class="scenario-desc">1.8% Loss • 25ms • 7ms Jitter • 480p</span>
+              </div>
+            </div>
+
+            <div class="scenario-card card-poor" onclick="loadPreset(4.5, 45, 14, 1000)">
+              <div class="scenario-icon-wrap">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></svg>
+              </div>
+              <div>
+                <span class="scenario-title">Poor (1 Mbps) &rarr; P1</span>
+                <span class="scenario-desc">4.5% Loss • 45ms • 14ms Jitter • 360p (AR-ResNet ON)</span>
+              </div>
+            </div>
+
+            <div class="scenario-card card-verypoor" onclick="loadPreset(15.0, 100, 25, 350)" style="grid-column: span 2;">
+              <div class="scenario-icon-wrap">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              </div>
+              <div>
+                <span class="scenario-title">Very Poor (350 kbps) &rarr; P0</span>
+                <span class="scenario-desc">15% Loss • 100ms Delay • 25ms Jitter • Emergency 240p (AR-ResNet ON)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Screen 4: DIP & DL Loss Analysis -->
+    <div id="screen-dip" class="screen-panel">
+      <div class="grid-split">
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Pixel-Level DIP Metrics &amp; AR-ResNet Loss Functions</span></div>
+          <div style="font-size:0.9rem; line-height:2.1;">
+            <div>Measured Encoder Mean Squared Error (MSE): <b id="dip-mse" style="color:var(--rose);">--</b></div>
+            <div>Measured Encoder Local Codec PSNR: <b id="dip-psnr" style="color:var(--emerald);">-- dB</b></div>
+            <div>AR-ResNet Restored PSNR Estimate: <b id="dip-ai-psnr" style="color:var(--purple);">-- dB</b></div>
+            <div>Measured Structural Similarity Index (SSIM): <b id="dip-ssim" style="color:var(--amber);">--</b></div>
+          </div>
+
+          <div style="margin-top:12px; padding:12px; background:var(--card-inner); border:1px solid var(--border); border-radius:8px; font-size:0.82rem; line-height:1.9;">
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:4px; margin-bottom:6px;">
+              <span style="color:var(--text-muted); font-weight:700; text-transform:uppercase;">Active DL Loss Objective:</span>
+              <b id="dip-loss-name" style="color:var(--cyan); font-family:monospace;">custom_stream (Total: --)</b>
+            </div>
+            <div><span style="color:var(--text-muted);">Standard Losses:</span> MSE: <b id="dip-l-mse">--</b> &nbsp;|&nbsp; L1 (MAE): <b id="dip-l-l1">--</b> &nbsp;|&nbsp; Charbonnier: <b id="dip-l-charb">--</b></div>
+            <div><span style="color:var(--text-muted);">Custom Losses:</span> 8x8 Block Seam: <b id="dip-l-grid" style="color:var(--purple);">--</b> &nbsp;|&nbsp; Sobel Edge: <b id="dip-l-sobel" style="color:var(--amber);">--</b> &nbsp;|&nbsp; 2D FFT: <b id="dip-l-fft" style="color:var(--emerald);">--</b></div>
+          </div>
+
+          <div style="height: 165px; width: 100%; margin-top: 14px;">
+            <canvas id="dipQualityChart"></canvas>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Active 8x8 DCT Quantization Table (Q = <span id="mat-q">--</span>, Applied to Bitstream)</span></div>
+          <table class="dct-grid" id="dct-table"></table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Screen 5: Telemetry & Resilience -->
+    <div id="screen-reports" class="screen-panel">
+      <div class="panel" style="border: 1px solid var(--purple);">
+        <div class="panel-header">
+          <span class="panel-title" style="color: var(--purple);">
+            AR-ResNet Deep Learning Restoration &amp; Empirical Quality Summary
+          </span>
+          <span id="ai-val-badge" style="background: rgba(168, 85, 247, 0.2); color: var(--purple); padding: 4px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 700;">AR-ResNet Active</span>
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:14px; margin-bottom: 10px;">
+          <div style="background: var(--card-inner); padding: 14px; border-radius: 6px;">
+            <div style="font-size:0.70rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Empirical Codec PSNR MAE</div>
+            <div style="font-size:1.45rem; font-weight:800; color:var(--purple); margin:4px 0;" id="val-ai-mae">-- dB</div>
+            <div style="font-size:0.72rem; color:var(--text-muted);">Mean Absolute Error vs. Measured PSNR</div>
+          </div>
+          <div style="background: var(--card-inner); padding: 14px; border-radius: 6px;">
+            <div style="font-size:0.70rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Empirical Codec PSNR RMSE</div>
+            <div style="font-size:1.45rem; font-weight:800; color:var(--indigo); margin:4px 0;" id="val-ai-rmse">-- dB</div>
+            <div style="font-size:0.72rem; color:var(--text-muted);">Root Mean Squared Error on live window</div>
+          </div>
+          <div style="background: var(--card-inner); padding: 14px; border-radius: 6px;">
+            <div style="font-size:0.70rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Congestion Detection Hit Rate</div>
+            <div style="font-size:1.45rem; font-weight:800; color:var(--emerald); margin:4px 0;" id="val-ai-acc">-- %</div>
+            <div style="font-size:0.72rem; color:var(--text-muted);">CN Rule-Based AIMD Agreement</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="border: 1px solid var(--indigo);">
+        <div class="panel-header">
+          <span class="panel-title" style="color: var(--indigo);">
+            Resilience Telemetry: Bitwise XOR FEC + 32-Pkt Reorder Window + Deadline Concealment
+          </span>
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:14px; margin-bottom: 10px;">
+          <div style="background: var(--card-inner); padding: 14px; border-radius: 6px;">
+            <div style="font-size:0.70rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Playout Jitter Buffer</div>
+            <div style="font-size:1.45rem; font-weight:800; color:var(--cyan); margin:4px 0;" id="val-jb-ms">-- ms</div>
+            <div style="font-size:0.72rem; color:var(--text-muted);">Timestamp-sorted deadline queue</div>
+          </div>
+          <div style="background: var(--card-inner); padding: 14px; border-radius: 6px;">
+            <div style="font-size:0.70rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">XOR FEC Recovered</div>
+            <div style="font-size:1.45rem; font-weight:800; color:var(--emerald); margin:4px 0;" id="val-fec-frames">0 Frames</div>
+            <div style="font-size:0.72rem; color:var(--text-muted);">Reconstructed without retransmission</div>
+          </div>
+          <div style="background: var(--card-inner); padding: 14px; border-radius: 6px;">
+            <div style="font-size:0.70rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Late Frames Discarded</div>
+            <div style="font-size:1.45rem; font-weight:800; color:var(--rose); margin:4px 0;" id="val-late-drops">0 Frames</div>
+            <div style="font-size:0.72rem; color:var(--text-muted);">Arrived past playout deadline</div>
+          </div>
+          <div style="background: var(--card-inner); padding: 14px; border-radius: 6px;">
+            <div style="font-size:0.70rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Anti-Freeze Concealed</div>
+            <div style="font-size:1.45rem; font-weight:800; color:var(--amber); margin:4px 0;" id="val-concealed-frames">0 Frames</div>
+            <div style="font-size:0.72rem; color:var(--text-muted);">Optical flow synthesis on overdue frames</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Telemetry Export (100% Direct Measured Metrics &amp; Ping-Pong RTT)</span>
+          <a href="/export/csv" class="btn btn-cyan" style="text-decoration:none;">Download Telemetry CSV</a>
+        </div>
+        <table id="events-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Target Resolution</th>
+              <th>FPS</th>
+              <th>Quality (Q)</th>
+              <th>Decision Reasoning (CN Rule-Based AIMD)</th>
+            </tr>
+          </thead>
+          <tbody id="events-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    let isWhite = false;
+    function toggleTheme() {
+      isWhite = !isWhite;
+      document.body.className = isWhite ? 'theme-white' : '';
+      const gridColor = isWhite ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.08)';
+      chartHome.options.scales.y1.grid.color = gridColor;
+      chartHome.update();
+      chartDIP.options.scales.y.grid.color = gridColor;
+      chartDIP.update();
+    }
+
+    function showScreen(screenId, element) {
+      document.querySelectorAll('.screen-panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.nav-tab').forEach(b => b.classList.remove('active'));
+      document.getElementById(screenId).classList.add('active');
+      element.classList.add('active');
+
+      const videoImg = document.getElementById('video-display');
+      if (screenId === 'screen-stream') {
+        if (!videoImg.src.includes('/feed_stream')) {
+          videoImg.src = '/feed_stream';
+        }
+      }
+
+      if (screenId === 'screen-home') setTimeout(() => chartHome.resize(), 50);
+      if (screenId === 'screen-dip') setTimeout(() => chartDIP.resize(), 50);
+    }
+
+    const ctxHome = document.getElementById('homeTelemetryChart').getContext('2d');
+    const chartHome = new Chart(ctxHome, {
+      type: 'line',
+      data: {
+        labels: Array(30).fill(''),
+        datasets: [
+          { label: 'Achieved Wire Throughput (kbps)', borderColor: '#38bdf8', backgroundColor: 'rgba(56, 189, 248, 0.15)', data: Array(30).fill(1200), yAxisID: 'y1', tension: 0.35, fill: true },
+          { label: 'Configured Shaper Limit (kbps)', borderColor: '#6366f1', borderDash: [6, 3], data: Array(30).fill(6000), yAxisID: 'y1', tension: 0.35, fill: false },
+          { label: 'Network Congestion Stress (%)', borderColor: '#a855f7', data: Array(30).fill(2), yAxisID: 'y2', tension: 0.35 },
+          { label: 'Feedback Measured Loss (%)', borderColor: '#f43f5e', data: Array(30).fill(0), yAxisID: 'y2', borderDash: [3, 3], tension: 0.35 }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        scales: {
+          x: { display: false },
+          y1: { position: 'left', grid: { color: 'rgba(255, 255, 255, 0.06)' }, ticks: { color: '#38bdf8' } },
+          y2: { min: 0, max: 100, position: 'right', grid: { display: false }, ticks: { color: '#a855f7' } }
+        }
+      }
+    });
+
+    const ctxDIP = document.getElementById('dipQualityChart').getContext('2d');
+    const chartDIP = new Chart(ctxDIP, {
+      type: 'line',
+      data: {
+        labels: Array(25).fill(''),
+        datasets: [
+          { label: 'Measured Encoder Codec PSNR (dB)', borderColor: '#10b981', backgroundColor: 'rgba(16, 185, 129, 0.15)', data: Array(25).fill(38), yAxisID: 'y', tension: 0.3, fill: true },
+          { label: 'AR-ResNet Restored PSNR (dB)', borderColor: '#a855f7', borderDash: [5, 3], data: Array(25).fill(38), yAxisID: 'y', tension: 0.3, fill: false }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        scales: {
+          x: { display: false },
+          y: { min: 20, max: 46, position: 'left', ticks: { color: '#10b981' } }
+        }
+      }
+    });
+
+    function highlightActivePill(idx) {
+      for (let i = 0; i <= 4; i++) {
+        const el = document.getElementById('pill-' + i);
+        if (el) {
+          if (i === idx) el.classList.add('active');
+          else el.classList.remove('active');
+        }
+      }
+    }
+
+    function renderDCTTable(mat) {
+      const tbl = document.getElementById('dct-table');
+      if (!tbl) return;
+      tbl.innerHTML = '';
+      mat.forEach(row => {
+        const tr = document.createElement('tr');
+        row.forEach(val => {
+          const td = document.createElement('td');
+          td.innerText = val;
+          const intensity = Math.min(255, Math.floor((val / 200) * 200));
+          td.style.backgroundColor = `rgba(167, 139, 250, ${intensity / 255 * 0.35})`;
+          tr.appendChild(td);
+        });
+        tbl.appendChild(tr);
+      });
+    }
+
+    setInterval(() => {
+      fetch('/telemetry')
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById('kpi-achieved-bw').innerText = data.achieved_throughput_kbps.toFixed(0);
+          document.getElementById('kpi-configured-bw').innerText = data.configured_bw_limit_kbps.toFixed(0);
+          document.getElementById('kpi-loss').innerText = data.loss_rate.toFixed(1) + '%';
+          document.getElementById('kpi-ai-loss-prob').innerText = data.ai_frame_loss_prob_pct.toFixed(1) + '%';
+          document.getElementById('kpi-ai-acc-sub').innerText = data.loss_type
+            ? `Loss: ${data.loss_type}`
+            : 'AR-ResNet Active';
+
+          document.getElementById('kpi-res').innerText = `${data.resolution} @ ${data.fps}fps`;
+          document.getElementById('kpi-psnr').innerText = data.encoder_psnr.toFixed(1) + ' dB';
+          document.getElementById('kpi-ai-psnr').innerText = data.ai_predicted_codec_psnr_db.toFixed(1) + ' dB';
+          document.getElementById('kpi-ai-mae-sub').innerText = data.quality <= 65
+            ? 'DL Deblocking Active'
+            : 'HD Passthrough';
+
+          document.getElementById('kpi-jitter').innerText = data.jitter.toFixed(1) + ' ms';
+          document.getElementById('kpi-rtt').innerText = data.rtt + ' ms';
+          document.getElementById('kpi-total-data').innerText = data.total_data_mb.toFixed(2) + ' MB';
+          
+          document.getElementById('frame-counter').innerText = 'Frame #' + data.frame_id;
+          document.getElementById('tag-current-res').innerText = data.resolution;
+          document.getElementById('hud-quality-chip').innerText = 'Q: ' + data.quality;
+          document.getElementById('mon-psnr-pill').innerText = 'Codec PSNR: ' + data.encoder_psnr.toFixed(1) + ' dB';
+          document.getElementById('dest-client-label').innerText = 'UDP DEST: ' + data.client_ip;
+          document.getElementById('insp-client-ip').innerText = data.client_ip + ':5004';
+          document.getElementById('insp-ai-val-state').innerText = data.ai_validation_status;
+          document.getElementById('reasoning-text').innerText = data.reason;
+
+          highlightActivePill(data.profile_id);
+
+          document.getElementById('ai-val-badge').innerText = data.ai_validation_status;
+          document.getElementById('val-ai-mae').innerText = data.ai_psnr_mae_db.toFixed(2) + ' dB';
+          document.getElementById('val-ai-rmse').innerText = data.ai_psnr_rmse_db.toFixed(2) + ' dB';
+          document.getElementById('val-ai-acc').innerText = data.ai_loss_accuracy_pct.toFixed(1) + ' %';
+
+          document.getElementById('val-jb-ms').innerText = data.jitter_buf_ms + ' ms';
+          document.getElementById('insp-jitter-buf').innerText = data.jitter_buf_ms + ' ms (Timestamp Heap)';
+          document.getElementById('val-fec-frames').innerText = data.fec_recovered_frames + ' Frames';
+          document.getElementById('insp-fec-count').innerText = data.fec_recovered_frames + ' Frames';
+          document.getElementById('val-late-drops').innerText = data.late_dropped + ' Frames';
+          document.getElementById('insp-late-drops').innerText = data.late_dropped + ' Frames';
+          document.getElementById('val-concealed-frames').innerText = data.concealed_frames + ' Frames';
+
+          const pill = document.getElementById('aimd-status-pill');
+          if (data.reason.includes('Down')) {
+            pill.innerText = 'AIMD: Rate Step Down';
+            pill.style.borderColor = 'var(--rose)';
+            pill.style.color = 'var(--rose)';
+          } else if (data.reason.includes('Up')) {
+            pill.innerText = 'AIMD: Probing Up';
+            pill.style.borderColor = 'var(--emerald)';
+            pill.style.color = 'var(--emerald)';
+          } else {
+            pill.innerText = 'CN AIMD + DL: Steady';
+            pill.style.borderColor = 'var(--cyan)';
+            pill.style.color = 'var(--cyan)';
+          }
+
+          document.getElementById('dip-mse').innerText = data.mse;
+          document.getElementById('dip-psnr').innerText = data.encoder_psnr.toFixed(1) + ' dB';
+          document.getElementById('dip-ai-psnr').innerText = data.ai_predicted_codec_psnr_db.toFixed(1) + ' dB';
+          document.getElementById('dip-ssim').innerText = data.ssim.toFixed(3);
+          document.getElementById('mat-q').innerText = data.quality;
+          if (data.quant_matrix) renderDCTTable(data.quant_matrix);
+
+          // Update Standard & Custom DL Loss Breakdown
+          if (data.loss_type) {
+            document.getElementById('dip-loss-name').innerText = `${data.loss_type} (Total: ${data.loss_total})`;
+          }
+          if (data.loss_breakdown && data.loss_breakdown.mse !== undefined) {
+            document.getElementById('dip-l-mse').innerText = data.loss_breakdown.mse;
+            document.getElementById('dip-l-l1').innerText = data.loss_breakdown.l1;
+            document.getElementById('dip-l-charb').innerText = data.loss_breakdown.charbonnier;
+            document.getElementById('dip-l-grid').innerText = data.loss_breakdown.block_grid;
+            document.getElementById('dip-l-sobel').innerText = data.loss_breakdown.sobel_edge;
+            document.getElementById('dip-l-fft').innerText = data.loss_breakdown.fft_spectrum;
+          }
+
+          const tbody = document.getElementById('events-table-body');
+          if (tbody && data.events) {
+            tbody.innerHTML = '';
+            data.events.forEach(e => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `<td>${e.time}</td><td><b>${e.res}</b></td><td>${e.fps}</td><td>${e.q}</td><td>${e.reason}</td>`;
+              tbody.appendChild(tr);
+            });
+          }
+
+          chartHome.data.datasets[0].data.push(data.achieved_throughput_kbps);
+          chartHome.data.datasets[0].data.shift();
+          chartHome.data.datasets[1].data.push(data.configured_bw_limit_kbps);
+          chartHome.data.datasets[1].data.shift();
+          chartHome.data.datasets[2].data.push(data.ai_frame_loss_prob_pct);
+          chartHome.data.datasets[2].data.shift();
+          chartHome.data.datasets[3].data.push(data.loss_rate);
+          chartHome.data.datasets[3].data.shift();
+          chartHome.update();
+
+          chartDIP.data.datasets[0].data.push(data.encoder_psnr);
+          chartDIP.data.datasets[0].data.shift();
+          chartDIP.data.datasets[1].data.push(data.ai_predicted_codec_psnr_db);
+          chartDIP.data.datasets[1].data.shift();
+          chartDIP.update();
+        })
+        .catch(() => {});
+    }, 500);
+
+    function applyLabSettings() {
+      const bw = document.getElementById('lab-bw').value;
+      const loss = document.getElementById('lab-loss').value;
+      const delay = document.getElementById('lab-delay').value;
+      const jitter = document.getElementById('lab-jitter').value;
+      document.getElementById('val-bw').innerText = bw + ' kbps';
+      document.getElementById('val-loss').innerText = loss + '%';
+      document.getElementById('val-delay').innerText = delay + ' ms';
+      document.getElementById('val-jitter').innerText = jitter + ' ms';
+      fetch(`/network_lab/apply?bw=${bw}&loss=${loss}&delay=${delay}&jitter=${jitter}`);
+    }
+
+    function loadPreset(loss, delay, jitter, bw) {
+      document.getElementById('lab-bw').value = bw;
+      document.getElementById('lab-loss').value = loss;
+      document.getElementById('lab-delay').value = delay;
+      document.getElementById('lab-jitter').value = jitter;
+      applyLabSettings();
+    }
+  </script>
+</body>
+</html>
